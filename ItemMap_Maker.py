@@ -19,7 +19,7 @@ sys.path.append(os.path.join(os.getcwd(), "Assets")) # Voor het verkrijgen van h
 ########################################################################################################################
 
 # Huidige versie van het script.
-versionnr = "1.0"
+versionnr = "1.1"
 
 # Verkrijg datum in het format YY-MM-DD zonder de -'s
 today = datetime.datetime.now().strftime("%y%m%d")
