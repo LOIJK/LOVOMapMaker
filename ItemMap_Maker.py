@@ -2,17 +2,39 @@ import tkinter as tk
 from tkinter import font
 from tkinter import messagebox
 from tkinter import filedialog
+from tkinter import ttk
+from time import sleep
+import threading
+from threading import Thread
+import tkcalendar
 import datetime
 import os
 import sys
+import subprocess
 import zipfile
 import requests
 import logging
 import functools
 import tempfile
 import shutil
+import winsound
+import re
+import pymiere
 from Assets.download_links import download_links
-sys.path.append(os.path.join(os.getcwd(), "Assets")) # Voor het verkrijgen van het bestand download_links.py
+import pymiere
+from pymiere import wrappers
+from pymiere import objects
+import pymiere.exe_utils as pymiere_exe
+from pymiere.wrappers import get_system_sequence_presets
+from pymiere.wrappers import time_from_seconds
+from pymiere.wrappers import add_video_track
+import sys
+import os
+from datetime import datetime
+import time
+import requests
+import shutil
+from PIL import Image
 
 ########################################################################################################################
 #Het huidige versienummer script + aanmaken van log bestanden + verkrijgen download links
@@ -22,14 +44,34 @@ sys.path.append(os.path.join(os.getcwd(), "Assets")) # Voor het verkrijgen van h
 versionnr = "1.0"
 
 # Verkrijg datum in het format YY-MM-DD zonder de -'s
-today = datetime.datetime.now().strftime("%y%m%d")
-current_time = datetime.datetime.now().strftime("%H.%M.%S")
+today = datetime.now().strftime("%y%m%d")
+current_time = datetime.now().strftime("%H.%M.%S")
+
 
 # Maak een log bestand aan voor het bijhouden van errors
 log_filename = f"LOVOMapMaker_log_{today}_{current_time}.log"
 log_file_path = os.path.join('Assets', 'logs', log_filename)
 logging.basicConfig(filename=log_file_path, level=logging.DEBUG)
 logger = logging.getLogger(__name__)
+
+
+# Create a logger for the convert script
+convert_logger = logging.getLogger('convert_logger')
+convert_logger.setLevel(logging.DEBUG)
+
+# Create a file handler for the convert script logger
+convert_log_filename = "logProgressConverter.txt"
+convert_log_file_path = os.path.join('Assets', 'logs', convert_log_filename)
+convert_file_handler = logging.FileHandler(convert_log_file_path)
+convert_file_handler.setLevel(logging.DEBUG)
+
+# Create a formatter for the file handler
+convert_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+convert_file_handler.setFormatter(convert_formatter)
+
+# Add the file handler to the logger
+convert_logger.addHandler(convert_file_handler)
+
 
 @functools.lru_cache
 def get_download_link(category):
@@ -42,7 +84,7 @@ def get_download_link(category):
 ########################################################################################################################
 
 def update_to_latest_version():
-    # Vervang <USERNAME> en <REPO> met de GitHub gebruikersnaam en repository naaam
+    # Vervang <USERNAME> en <REPO> met de GitHub gebruikersnaam en repository naam
     api_url = "https://api.github.com/repos/LOIJK/LOVOMapMaker/releases/latest"
     headers = {
         "Accept": "application/vnd.github+json"
@@ -56,11 +98,17 @@ def update_to_latest_version():
         return
 
     # Verkrijg tag name van de laatste release (dmv versie_nummer)
-    latest_version = response.json()["tag_name"]
+    latest_versiontag = response.json()["tag_name"]
+
+    # Remove 'v' from the tag name if it exists
+    if latest_versiontag.startswith("v"):
+        latest_version = latest_versiontag.replace("v", "", 1)
+
     # Vergelijk huidige versie nummer tegen die op Github
     if latest_version > versionnr:
         # Er is een nieuwe versie, laat zien aan gebruiker dmv messagebox
-        messagebox.showinfo("Updaten naar de laatste versie", f"Er is een nieuwe versie beschikbaar. Wacht heel even en druk dan op ok.")
+        # Remove # below to show messagebox, but it keeps looping because of a bug.
+        # messagebox.showinfo("Update to the latest version", "A new version is available. Please wait a moment and then click OK.")
         # Verkrijg de url van de zipfile, hierin zit de laatste versie
         zip_url = response.json()["zipball_url"]
         # Download zip file
@@ -85,20 +133,22 @@ def update_to_latest_version():
                     shutil.copy2(os.path.join(root, file), ".")
                     # Breek uit de loop en ga uit de functie
                     break
-                    # Verwijder het tijdelijke zipbestand en de directory
-                    os.remove(zip_file.name)
-                    temp_dir.cleanup()
-                    # Start het script opnieuw om de nieuwe versie te laden
-                    python = sys.executable
-                    os.execl(python, python, * sys.argv)
+        # Verwijder het tijdelijke zipbestand en de directory
+        os.remove(zip_file.name)
+        temp_dir.cleanup()
+        # Start het script opnieuw om de nieuwe versie te laden
+        python = sys.executable
+        os.execl(python, python, * sys.argv)
         # Het scriptbestand was niet gevonden in het uitgepakte directory, log een error en return
         logger.error("Scriptbestand niet gevonden in uitgepakte map")
         temp_dir.cleanup()
     else:
         # De huidige version is up to date, laat een notificatie zien aan de gebruiker.
-        messagebox.showinfo("Up to date", "U gebruikt de nieuwste versie van het script.")
+        # Remove # below to show messagebox, but it keeps looping because of a bug.
+        # messagebox.showinfo("Up to date", "U gebruikt de nieuwste versie van het script.")
+        print("U gebruikt de nieuwste versie van het script.")
 
-# Voer de funtie: update_to_latest_version uit wanneer het script start.
+# Voer de functie update_to_latest_version uit wanneer het script start.
 update_to_latest_version()
 
 
@@ -166,12 +216,8 @@ def run_themescript():
                     new_name = f"{folder_name_proj}.prproj"
                     os.rename(os.path.join(root, old_name), os.path.join(root, new_name))
 
-        # Locatie waar de map staat
-        current_dir = os.getcwd()
-        folder_path = os.path.join(current_dir, folder_name)
-
         # Log de folder path waar de bestanden zijn uitgepakt
-        logger.debug(f'Uitpakken files to: {folder_path}')
+        logger.debug(f'Uitpakken bestanden naar: {folder_path}')
 
         # laat een bericht zien om aan te geven dat het item succesvol is aangemaakt
         messagebox.showinfo("Vormgeving succesvol aangemaakt!", "Locatie en mapnaam is te vinden op: " + folder_path)
@@ -184,28 +230,126 @@ def run_themescript():
 
 
 ########################################################################################################################
-#Programmering knop download vormgeving + thema ophalen
+#Programmering venster aanmaken + converters
 ########################################################################################################################
 
-def download_vormgeving():
-    # Log dat de download_vormgeving functie wordt uitgevoerd
-    logger.debug('Running download_vormgeving function')
+progress_bar = None
 
-    # Haal de downloadlink op uit de woordenboek op basis van het geselecteerde thema
-    download_link = download_links["Vormgeving"]
+def open_window_externevideoconvert():
+    global progress_bar
+    # Create a new window
+    convert_window = tk.Toplevel()
+    convert_window.title("Bestanden converteren")
+    convert_window.geometry("380x200")
+    convert_font = tk.font.Font(family='Arial', size=12)
+    convert_window.option_add('*font', convert_font)
+
+    # Create a button for converting to the LOVO TV preset
+    convert_button = tk.Button(convert_window, text="Converteer video naar LOVO TV Preset", command=run_convert_script)
+    convert_button.pack(pady=5)
+    # Create a button for converting to the LOVO TV preset + intro
+    convert_button = tk.Button(convert_window, text="Converteer video naar thema + LOVO TV Preset", command=run_convert_script)
+    convert_button.pack(pady=5)
+
+def run_convert_script():
+    global progress_bar
+    try:
+        # Open a file dialog to select the file to convert
+        root.filename = filedialog.askopenfilename(initialdir = "/", title = "Selecteer een bestand", filetypes = (("alle bestanden", "*.*"), ("MP4 bestanden", "*.mp4"), ("AVI bestanden", "*.avi"), ("MKV bestanden", "*.mkv")))
+        # Check if a file was selected
+        if not root.filename:
+            return
+        # Check of het bestand spaties of speciale karakters heeft
+        if re.search(" ", root.filename):
+            # Show an error message als het bestand spaties of speciale karakters heeft
+            messagebox.showerror("Foutmelding", "Het geselecteerde bestand heeft spaties of speciale tekens. Wijzig het en selecteer het bestand opnieuw.")
+            return
+        
+        output_file = "{}_convertLOVOTVPreset.mp4".format(root.filename)
+        if os.path.exists(output_file):
+            messagebox.showerror("Foutmelding", "Het geconverteerde bestand bestaat al. Verwijder het bestaande bestand of geef een andere naam op.")
+            return
+
+        # Define the ffmpeg command to convert the file
+        command = "ffmpeg -i {} -vcodec h264 -s 1920x1080 -r 25 -pix_fmt yuv420p -b:v 6M -profile:v main -level 4.1 -color_primaries bt709 -color_trc bt709 -colorspace bt709 -x265-params \"colorprim=bt709:transfer=bt709:colorspace=bt709\" -acodec aac -ar 48000 -ac 2 -b:a 192k -metadata:s:a:0 language=eng -metadata:s:a:0 title=\"Stereo\" -map_metadata 0 -map_chapters 0 -movflags +faststart {}_convertLOVOTVPreset.mp4".format(root.filename, root.filename)
+        progress_bar.start()
+        def run():
+            subprocess.run(command, shell=True, check=True)
+            progress_bar.stop()
+            output_field.delete(1.0, tk.END)
+            output_field.insert(tk.END, "{}".format(root.filename))
+            winsound.PlaySound("SystemExit", winsound.SND_ALIAS)
+        t = Thread(target=run)
+        t.start()
+    except Exception as e:
+        progress_bar.stop()
+        # Log the error message to the log file
+        logger.exception(e)
+        # Show an error message to the user
+        messagebox.showerror("Foutmelding", "Er is een fout opgetreden tijdens het converteren van het bestand. Raadpleeg het logbestand voor meer informatie.")
+
+def run_convert_script_with_intro():
+    global progress_bar
+    try:
+        # Open a file dialog to select the file to convert
+        root.filename = filedialog.askopenfilename(initialdir = "/", title = "Selecteer een bestand", filetypes = (("alle bestanden", "*.*"), ("MP4 bestanden", "*.mp4"), ("AVI bestanden", "*.avi"), ("MKV bestanden", "*.mkv")))
+        # Check if a file was selected
+        if not root.filename:
+            return
+        # Check of het bestand spaties of speciale karakters heeft
+        if re.search(" ", root.filename):
+            # Show an error message als het bestand spaties of speciale karakters heeft
+            messagebox.showerror("Foutmelding", "Het geselecteerde bestand heeft spaties of speciale tekens. Wijzig het en selecteer het bestand opnieuw.")
+            return
+        
+        output_file = "{}_convertLOVOTVPreset.mp4".format(root.filename)
+        if os.path.exists(output_file):
+            messagebox.showerror("Foutmelding", "Het geconverteerde bestand bestaat al. Verwijder het bestaande bestand of geef een andere naam op.")
+            return
+        intro_video = "Assets/ThemaBumper.mov"
+        # Define the ffmpeg command to concatenate the intro video and the selected video 
+        command = "ffmpeg -i {} -i {} -filter_complex \"[0:v]trim=start=4.15,format=yuva420p[intro];[intro][1:v]blend=all_mode='overlay':all_opacity=0.8[v]\" -map \"[v]\" -c:v libx264 -b:v 6M -r 25 -pix_fmt yuv420p -profile:v main -level 4.1 -color_primaries bt709 -color_trc bt709 -colorspace bt709 -x265-params \"colorprim=bt709:transfer=bt709:colorspace=bt709\" -acodec aac -ar 48000 -ac 2 -b:a 192k -metadata:s:a:0 language=eng -metadata:s:a:0 title=\"Stereo\" -map_metadata 0 -map_chapters 0 -movflags +faststart {}_convertLOVOTVPreset.mp4".format(intro_video, root.filename, root.filename)
+        progress_bar.start()
+        def run():
+            subprocess.run(command, shell=True, check=True)
+            progress_bar.stop()
+            output_field.delete(1.0, tk.END)
+            output_field.insert(tk.END, "{}".format(root.filename))
+            winsound.PlaySound("SystemExit", winsound.SND_ALIAS)
+        t = Thread(target=run)
+        t.start()
+    except Exception as e:
+        progress_bar.stop()
+        # Log the error message to the log file
+        logger.exception(e)
+        # Show an error message to the user
+        messagebox.showerror("Foutmelding", "Er is een fout opgetreden tijdens het converteren van het bestand. Raadpleeg het logbestand voor meer informatie.")
+
+
+
+########################################################################################################################
+#Programmering knop download vormgeving, handleiding + huisstijlhandboek en evt thema ophalen
+########################################################################################################################
+
+def download_overigeitems(item_name, download_link):
+    # Log that the download_item function is being executed
+    logger.debug(f'Running download_{item_name.lower()} function')
+
+    # Obtain the download link from the dictionary based on the selected theme
+    download_link = download_links[item_name]
     
-    # Log de downloadlink
+    # Log the download link
     logger.debug(f'Obtained download link: {download_link}')
 
-    # Open een bestandsdialoog om de opslagmap te selecteren
+    # Open a file dialog to select the storage location
     folder_path = filedialog.askdirectory()
 
-    # Maak de map met de huidige datum en de opgegeven titel aan
-    folder_name = f"{today}_Vormgeving_{current_time}"
+    # Create the folder with the current date and the specified title
+    folder_name = f"{today}_{item_name}_{current_time}"
     folder_path = os.path.join(folder_path, folder_name)
     os.makedirs(folder_path)
 
-    # Download het zip-bestand
+    # Download the zip file
     zip_file = os.path.join(folder_path, "download.zip")
     try:
         response = requests.get(download_link)
@@ -213,11 +357,11 @@ def download_vormgeving():
         logger.error(f'Error downloading zip file: {e}')
         return
 
-    # Schrijf het zip-bestand naar de map
+    # Write the zip file to the folder
     with open(zip_file, "wb") as f:
         f.write(response.content)
 
-    # Pak het zip-bestand uit in de map
+    # Extract the zip file to the folder
     try:
         zip_ref = zipfile.ZipFile(zip_file, "r")
         zip_ref.extractall(folder_path)
@@ -226,138 +370,14 @@ def download_vormgeving():
         logger.error(f'Error extracting zip file: {e}')
         return
 
-    # Verwijder het zip-bestand
+    # Delete the zip file
     os.remove(zip_file)
 
-    # Locatie waar de map staat
-    current_dir = os.getcwd()
-    folder_path = os.path.join(current_dir, folder_name)
-
-    # Log de map waar de bestanden naar uitgepakt worden
+    # Log the folder where the files are extracted to
     logger.debug(f'Extracting files to: {folder_path}')
 
-    # Geef een melding dat het item succesvol is aangemaakt
-    messagebox.showinfo("Vormgeving succesvol aangemaakt!", "Locatie en mapnaam is te vinden op: " + folder_path)
-    output_field.delete(1.0, tk.END)
-    output_field.insert(tk.END, folder_path)
-
-
-
-########################################################################################################################
-#Programmering knop download handleiding
-########################################################################################################################
-
-def download_handleiding():
-    # Log dat de download_handleiding functie wordt uitgevoerd
-    logger.debug('Running download_handleiding function')
-
-    # Haal de downloadlink op uit de woordenboek op basis van het geselecteerde thema
-    download_link = download_links["Handleiding"]
-    
-    # Log de downloadlink
-    logger.debug(f'Obtained download link: {download_link}')
-
-    # Open een file dialof om de opslagmap te selecteren
-    folder_path = filedialog.askdirectory()
-
-    # Maak de map met de huidige datum en de opgegeven titel aan
-    folder_name = f"{today}_Handleiding_{current_time}"
-    folder_path = os.path.join(folder_path, folder_name)
-    os.makedirs(folder_path)
-
-    # Download het zip-bestand
-    zip_file = os.path.join(folder_path, "download.zip")
-    try:
-        response = requests.get(download_link)
-    except Exception as e:
-        logger.error(f'Error downloading zip file: {e}')
-        return
-
-    # Schrijf het zip-bestand naar de map
-    with open(zip_file, "wb") as f:
-        f.write(response.content)
-
-    # Pak het zip-bestand uit in de map
-    try:
-        zip_ref = zipfile.ZipFile(zip_file, "r")
-        zip_ref.extractall(folder_path)
-        zip_ref.close()
-    except Exception as e:
-        logger.error(f'Error extracting zip file: {e}')
-        return
-
-    # Verwijder het zip-bestand
-    os.remove(zip_file)
-
-    # Locatie waar de map staat
-    current_dir = os.getcwd()
-    folder_path = os.path.join(current_dir, folder_name)
-
-    # Log de map waar de bestanden naar uitgepakt worden
-    logger.debug(f'Extracting files to: {folder_path}')
-
-    # Geef een melding dat het item succesvol is aangemaakt
-    messagebox.showinfo("Handleiding succesvol aangemaakt!", "Locatie en mapnaam is te vinden op: " + folder_path)
-    output_field.delete(1.0, tk.END)
-    output_field.insert(tk.END, folder_path)
-
-
-
-########################################################################################################################
-#Programmering knop download huisstijlhandboek
-########################################################################################################################
-
-def download_huisstijlhandboek():
-    # Log dat de download_huisstijlhandboek functie wordt uitgevoerd
-    logger.debug('Running download_huisstijlhandboek function')
-
-    # Haal de downloadlink op uit de woordenboek op basis van het geselecteerde thema
-    download_link = download_links["Huisstijlhandboek"]
-    
-    # Log de downloadlink
-    logger.debug(f'Obtained download link: {download_link}')
-
-    # Open een bestandsdialoog om de opslagmap te selecteren
-    folder_path = filedialog.askdirectory()
-
-    # Maak de map met de huidige datum en de opgegeven titel aan
-    folder_name = f"{today}_Huisstijlhandboek_{current_time}"
-    folder_path = os.path.join(folder_path, folder_name)
-    os.makedirs(folder_path)
-
-    # Download het zip-bestand
-    zip_file = os.path.join(folder_path, "download.zip")
-    try:
-        response = requests.get(download_link)
-    except Exception as e:
-        logger.error(f'Error downloading zip file: {e}')
-        return
-
-    # Schrijf het zip-bestand naar de map
-    with open(zip_file, "wb") as f:
-        f.write(response.content)
-
-    # Pak het zip-bestand uit in de map
-    try:
-        zip_ref = zipfile.ZipFile(zip_file, "r")
-        zip_ref.extractall(folder_path)
-        zip_ref.close()
-    except Exception as e:
-        logger.error(f'Error extracting zip file: {e}')
-        return
-
-    # Verwijder het zip-bestand
-    os.remove(zip_file)
-
-    # Locatie waar de map staat
-    current_dir = os.getcwd()
-    folder_path = os.path.join(current_dir, folder_name)
-
-    # Log de map waar de bestanden naar uitgepakt worden
-    logger.debug(f'Extracting files to: {folder_path}')
-
-    # Geef een melding dat het item succesvol is aangemaakt
-    messagebox.showinfo("Huisstijlhandboek succesvol aangemaakt!", "Locatie en mapnaam is te vinden op: " + folder_path)
+    # Show a message that the item was successfully created
+    messagebox.showinfo(f"{item_name} succesvol aangemaakt!", "Locatie en mapnaam is te vinden op: " + folder_path)
     output_field.delete(1.0, tk.END)
     output_field.insert(tk.END, folder_path)
 
@@ -381,15 +401,15 @@ def run_vraagteken():
 ########################################################################################################################
 
 # Create function to copy text
-def copy_text():
+def open_folder():
     # Get the text from the output field
     text = output_field.get(1.0, tk.END)
     
     # Remove the trailing newline character
-    text = text[:-1]
+    folder_location = text[:-1]
     
-    # Copy the text to the clipboard
-    root.clipboard_append(text)
+    # Open the folder in the file explorer
+    os.startfile(folder_location)
 
 
 
@@ -399,33 +419,33 @@ def copy_text():
 
 root = tk.Tk()
 root.title("LOVO Map Maker")
-root.geometry("400x600") # Eerste getal is breedte, tweede getal is hoogte
+root.geometry("400x665") # Eerste getal is breedte, tweede getal is hoogte
 font = tk.font.Font(family='Arial', size=12) # Semibold werkt niet, bold niet gebruiken
 root.option_add('*font', font)
 
-icoon_tskmana = tk.PhotoImage(file="Assets/images/LOGO_LOVO_Zw.gif") # maak een fotoimage-object van het icoonbestand
+icoon_tskmana = tk.PhotoImage(file="Assets/images/LOGO_LOVO_Zw.png") # maak een fotoimage-object van het icoonbestand
 root.wm_iconphoto(True, icoon_tskmana) # stel het icoon van het hoofdvenster in
 
-namelabel = tk.Label(root, text="Voer de naam van de editor/redacteur in:")
+namelabel = tk.Label(root, text="Voornaam editor:")
 namelabel.pack(padx=5, pady=5)
 
 nameeditor_entry = tk.Entry(root)
 nameeditor_entry.pack(padx=5, pady=5)
 
-titlelabel = tk.Label(root, text="Voer een titel voor de map in:")
+titlelabel = tk.Label(root, text="Titel van item:")
 titlelabel.pack()
 
 title_entry = tk.Entry(root)
 title_entry.pack(padx=5, pady=5)
 
 selected_category = tk.StringVar(root)
-selected_category.set("Klik hier om het thema te wijzigen") # instellen als standaardwaarde
+selected_category.set("Selecteer thema") # instellen als standaardwaarde
 
 categories = ["Amusement", "Archief", "Cultuur", "Natuur", "Nieuws", "Politiek", "Sport"]
-category_menu = tk.OptionMenu(root, selected_category, *categories)
+category_menu = ttk.Combobox(root, textvariable=selected_category, values=categories)
 category_menu.pack(pady=5)
 
-button = tk.Button(root, text="Start project maker", command=run_themescript)
+button = tk.Button(root, text="Maak map aan", command=run_themescript)
 button.pack(pady=5)
 
 # Maak een knop met de naam "Vormgeving"
@@ -433,7 +453,8 @@ label = tk.Label(root, text="Overige hulpmiddelen:")
 label.pack(pady=(30, 5))
 
 # Maak een knop om de vormgeving te downloaden
-vormgeving_button = tk.Button(root, text="Download vormgeving en font", command=download_vormgeving)
+vormgeving_button = tk.Button(root, text="Download vormgeving", command=lambda: download_overigeitems("Vormgeving", download_links["Vormgeving"]))
+vormgeving_button.pack(pady=5)
 vormgeving_button.pack(pady=5)
 
 # Maak een text veld aan dat o.a. het net aangemaakte folder_path kan laten zien.
@@ -441,17 +462,26 @@ output_field = tk.Text(root, width=30, height=5)
 output_field.insert(tk.END, "Hier komt de locatie van uw \ngedownloade bestand te staan \nwanneer u dit heeft aangemaakt.")
 output_field.pack(padx=10, pady=10)
 
-# Create copy button
-copy_button = tk.Button(root, text="Kopieer maplocatie", command=copy_text)
+# Knop om de map locatie over te nemen
+copy_button = tk.Button(root, text="Open map locatie", command=open_folder)
 copy_button.pack(padx=10, pady=10)
+
+# Converteer venster
+convert_button = tk.Button(root, text="Video's converteren", command=open_window_externevideoconvert)
+convert_button.pack(pady=5)
+
+# Create a progress bar
+progress_bar = ttk.Progressbar(root, mode='determinate',length=275)
+progress_bar.pack(pady=20)
 
 button = tk.Button(root, text="?", width=3, height=1, command=run_vraagteken)
 button.pack(side="bottom", anchor="se", padx= 5, pady=5)
 
-handleiding_button = tk.Button(root, text="Handleiding", command=download_handleiding)
-handleiding_button.pack(side="bottom", anchor="se", padx= 5, pady=5)
+# Tot nadere informatie is de knop handleiding uit en niet zichtbaar. Bij het verwijderen van de # zal de knop weer zichtbaar zijn.
+#handleiding_button = tk.Button(root, text="Handleiding", command=download_handleiding)
+#handleiding_button.pack(side="bottom", anchor="se", padx= 5, pady=5)
 
-handleiding_button = tk.Button(root, text="Huisstijlhandboek", command=download_huisstijlhandboek)
-handleiding_button.pack(side="bottom", anchor="se", padx= 5, pady=5)
+huisstijlhandboek_button = tk.Button(root, text="Download huisstijlhandboek", command=lambda: download_overigeitems("Huisstijlhandboek", download_links["Huisstijlhandboek"]))
+huisstijlhandboek_button.pack(side="bottom", anchor="se", padx= 5, pady=5)
 
 root.mainloop()
