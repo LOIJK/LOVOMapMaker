@@ -44,7 +44,7 @@ from PIL import Image
 ########################################################################################################################
 
 # Huidige versie van het script.
-versionnr = "1.2"
+versionnr = "1.3"
 versionnrdownload_links = vn_download_links
 versionnrmuziek_links = vn_muziek_links
 versionnrmuziekmogrt_links = vn_muziek_links
@@ -172,7 +172,6 @@ def has_special_characters(input_str):
 # Programmering voor progress bar voor downloaden scripts, vormgeving, huisstijlhandboek en vormgeving.
 # Maak een dubbele command van progressbar
 ########################################################################################################################
-
 
 def progressbar():
     # Maak scherm aan voor progressbar
@@ -334,8 +333,8 @@ def run_themescript():
 
         # Download the zip file
         download_zip_file(download_link, folder_path)
-        download_wav_file(category, muziek_links, folder_path)
-        download_mogrt_file(category, muziek_links, folder_path)
+        #download_wav_file(category, muziek_links, folder_path)
+        #download_mogrt_file(category, muziek_links, folder_path)
 
         for root, dirs, files in os.walk(f"{folder_path}/1. PROJECT"):
             for file in files:
