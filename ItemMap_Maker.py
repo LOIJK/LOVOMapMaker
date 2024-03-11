@@ -21,7 +21,9 @@ import shutil
 import winsound
 import re
 import pymiere
-from Assets.download_links import download_links
+from Assets.py.download_links import download_links, vn_download_links
+from Assets.py.muziek_links import muziek_links, vn_muziek_links
+from Assets.py.muziekmogrt_links import muziekmogrt_links, vn_muziekmogrt_links
 import pymiere
 from pymiere import wrappers
 from pymiere import objects
@@ -42,7 +44,10 @@ from PIL import Image
 ########################################################################################################################
 
 # Huidige versie van het script.
-versionnr = "1.1"
+versionnr = "1.2"
+versionnrdownload_links = vn_download_links
+versionnrmuziek_links = vn_muziek_links
+versionnrmuziekmogrt_links = vn_muziek_links
 
 # Verkrijg datum in het format YY-MM-DD zonder de -'s
 today = datetime.now().strftime("%y%m%d")
@@ -72,7 +77,6 @@ convert_file_handler.setFormatter(convert_formatter)
 
 # Add the file handler to the logger
 convert_logger.addHandler(convert_file_handler)
-
 
 @functools.lru_cache
 def get_download_link(category):
@@ -152,6 +156,8 @@ def update_to_latest_version():
 # Voer de functie update_to_latest_version uit wanneer het script start.
 update_to_latest_version()
 
+
+
 ########################################################################################################################
 # Programmering voor speciale karakters
 ########################################################################################################################
@@ -213,6 +219,82 @@ def download_zip_file(download_link, folder_path):
     os.remove(zip_file)
     return True
 
+
+
+########################################################################################################################
+#Programmering voor downloaden van een wav bestand.
+########################################################################################################################
+
+def download_wav_file(category, muziek_links, folder_path):
+    if category not in muziek_links:
+        print(f"Category '{category}' not found in muziekmogrt_links.")
+        return False
+
+    # Download the mogrt file for the main category
+    wav_file_path = os.path.join(folder_path, f"{category}-BUMPER.wav")
+    try:
+        response = requests.get(muziek_links[category])
+        with open(wav_file_path, 'wb') as file:
+            file.write(response.content)
+        print(f"Downloaded {category} file to {wav_file_path}")
+    except Exception as e:
+        print(f'Error downloading {category} file: {e}')
+        return False
+
+    # Check if the main category is "EnergiekOisterwijk" and download the additional category
+    if category == "EnergiekOisterwijk":
+        additional_category = "EnergiekOisterwijkExtra"
+        if category in muziek_links:
+            additional_category_file_path = os.path.join(folder_path, f"{additional_category}-MuziekExtra.wav")
+            try:
+                response_additional = requests.get(muziek_links[additional_category])
+                with open(additional_category_file_path, 'wb') as file_additional:
+                    file_additional.write(response_additional.content)
+                print(f"Downloaded {additional_category} file to {additional_category_file_path}")
+            except Exception as e:
+                print(f'Error downloading {additional_category} file: {e}')
+                return False
+
+
+
+########################################################################################################################
+#Programmering voor downloaden van een mogrt bestand.
+########################################################################################################################
+
+def download_mogrt_file(category, muziekmogrt_links, folder_path):
+    if category not in muziekmogrt_links:
+        print(f"Category '{category}' not found in muziekmogrt_links.")
+        return False
+
+    # Download the mogrt file for the main category
+    mogrt_file_path = os.path.join(folder_path, f"{category}-MuziekBUMPER.mogrt")
+    try:
+        response = requests.get(muziekmogrt_links[category])
+        with open(mogrt_file_path, 'wb') as file:
+            file.write(response.content)
+        print(f"Downloaded {category} file to {mogrt_file_path}")
+    except Exception as e:
+        print(f'Error downloading {category} file: {e}')
+        return False
+
+    # Check if the main category is "EnergiekOisterwijk" and download the additional category
+    if category == "EnergiekOisterwijk":
+        additional_category = "EnergiekOisterwijkExtra"
+        if category in muziekmogrt_links:
+            additional_muziekmogrt_file_path = os.path.join(folder_path, f"{additional_category}-MuziekExtra.mogrt")
+            try:
+                response_additional = requests.get(muziekmogrt_links[additional_category])
+                with open(additional_muziekmogrt_file_path, 'wb') as file_additional:
+                    file_additional.write(response_additional.content)
+                print(f"Downloaded {additional_category} file to {additional_muziekmogrt_file_path}")
+            except Exception as e:
+                print(f'Error downloading {additional_category} file: {e}')
+                return False
+
+    return True
+
+
+
 ########################################################################################################################
 #Programmering voor voer een titel in + gedeelte thema wijzigen
 ########################################################################################################################
@@ -252,6 +334,8 @@ def run_themescript():
 
         # Download the zip file
         download_zip_file(download_link, folder_path)
+        download_wav_file(category, muziek_links, folder_path)
+        download_mogrt_file(category, muziek_links, folder_path)
 
         for root, dirs, files in os.walk(f"{folder_path}/1. PROJECT"):
             for file in files:
@@ -418,7 +502,7 @@ def run_vraagteken():
     logger.debug('Running run_vraagteken function')
     
     # Laat het info bericht zien
-    messagebox.showinfo("Informatie over LOVO MapMaker", f"Product naam: ItemMap_MakerV{versionnr} \nBestandstype: Applicatie \nVersie nummer: {versionnr}")
+    messagebox.showinfo("Informatie over LOVO MapMaker", f"Product naam: ItemMap_MakerV{versionnr} \nBestandstype: Applicatie \nVersie programma: {versionnr} \nVersie thema projecten: {vn_download_links}\nVersie WAV muziek: {versionnrmuziek_links}\nVersie MOGRT muziek: {vn_muziekmogrt_links}")
 
 
 
@@ -467,7 +551,7 @@ title_entry.pack(padx=5, pady=(5, 10))
 selected_category = tk.StringVar(root)
 selected_category.set("Selecteer thema") # instellen als standaardwaarde
 
-categories = ["Amusement", "Archief", "Cultuur", "Natuur", "Nieuws", "Politiek", "Sport", "AanTafelMetClaudy", "GezondOisterwijk", "Special"]
+categories = ["Amusement", "Archief", "Cultuur", "Natuur", "Nieuws", "Politiek", "Sport", "AanTafelMetClaudy", "EnergiekOisterwijk", "Special"]
 category_menu = ttk.Combobox(root, textvariable=selected_category, values=categories)
 category_menu.pack(pady=5)
 
