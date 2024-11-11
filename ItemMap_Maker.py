@@ -1,9 +1,5 @@
 import tkinter as tk
-from tkinter import font
-from tkinter import messagebox
-from tkinter import filedialog
-from tkinter import ttk
-from tkinter import scrolledtext
+from tkinter import font, messagebox, filedialog, ttk, scrolledtext
 from time import sleep
 import threading
 from threading import Thread
@@ -25,18 +21,17 @@ from Assets.py.download_links import download_links, vn_download_links
 from Assets.py.muziek_links import muziek_links, vn_muziek_links
 from Assets.py.muziekmogrt_links import muziekmogrt_links, vn_muziekmogrt_links
 import pymiere
-from pymiere import wrappers
-from pymiere import objects
+from pymiere import wrappers, objects
 import pymiere.exe_utils as pymiere_exe
-from pymiere.wrappers import get_system_sequence_presets
-from pymiere.wrappers import time_from_seconds
-from pymiere.wrappers import add_video_track
+from pymiere.wrappers import get_system_sequence_presets, time_from_seconds, add_video_track
 import sys
 import os
 from datetime import datetime
 import time
 import requests
 import shutil
+import gzip
+from lxml import etree
 from PIL import Image
 
 ########################################################################################################################
@@ -44,7 +39,7 @@ from PIL import Image
 ########################################################################################################################
 
 # Huidige versie van het script.
-versionnr = "1.3"
+versionnr = "1.5"
 versionnrdownload_links = vn_download_links
 versionnrmuziek_links = vn_muziek_links
 versionnrmuziekmogrt_links = vn_muziek_links
@@ -77,6 +72,9 @@ convert_file_handler.setFormatter(convert_formatter)
 
 # Add the file handler to the logger
 convert_logger.addHandler(convert_file_handler)
+
+# Current working directory
+cwd = os.getcwd()
 
 @functools.lru_cache
 def get_download_link(category):
@@ -148,7 +146,7 @@ def update_to_latest_version():
         logger.error("Scriptbestand niet gevonden in uitgepakte map")
         temp_dir.cleanup()
     else:
-        # De huidige version is up to date, laat een notificatie zien aan de gebruiker.
+        # De huidige versie is up to date, laat een notificatie zien aan de gebruiker.
         # Remove # below to show messagebox, but it keeps looping because of a bug.
         # messagebox.showinfo("Up to date", "U gebruikt de nieuwste versie van het script.")
         print("U gebruikt de nieuwste versie van het script.")
@@ -193,29 +191,52 @@ def progressbar():
 ########################################################################################################################
 
 def download_zip_file(download_link, folder_path):
-    # Download the zip file
+    logger.info(f"Starting download_zip_file with download_link: {download_link} and folder_path: {folder_path}")
+    
+    # Define the path for the downloaded zip file
     zip_file = os.path.join(folder_path, "download.zip")
+    logger.debug(f"Zip file will be saved to: {zip_file}")
+    
+    # Download the zip file
     try:
+        logger.info("Attempting to download the zip file.")
         response = requests.get(download_link)
+        response.raise_for_status()  # Ensure the download was successful
+        logger.info("Zip file downloaded successfully.")
     except Exception as e:
-        logger.error(f'Fout bij het downloaden van het zip bestand: {e}')
+        logger.error(f"Error while downloading the zip file: {e}")
         return False
 
-    # Write the zip file to the folder
-    with open(zip_file, "wb") as f:
-        f.write(response.content)
-
-    # Extract the zip file in the folder
+    # Write the zip file to the specified folder
     try:
-        zip_ref = zipfile.ZipFile(zip_file, "r")
-        zip_ref.extractall(folder_path)
-        zip_ref.close()
+        logger.info("Attempting to write the downloaded content to the zip file.")
+        with open(zip_file, "wb") as f:
+            f.write(response.content)
+        logger.debug("Zip file written successfully to disk.")
     except Exception as e:
-        logger.error(f'Fout bij het uitpakken van het zip bestand: {e}')
+        logger.error(f"Error while writing the zip file to disk: {e}")
         return False
 
-    # Remove the zip file
-    os.remove(zip_file)
+    # Extract the zip file in the specified folder
+    try:
+        logger.info("Attempting to extract the zip file.")
+        with zipfile.ZipFile(zip_file, "r") as zip_ref:
+            zip_ref.extractall(folder_path)
+        logger.info(f"Zip file extracted successfully to folder: {folder_path}")
+    except Exception as e:
+        logger.error(f"Error while extracting the zip file: {e}")
+        return False
+
+    # Remove the zip file after extraction
+    try:
+        logger.info(f"Attempting to remove the zip file: {zip_file}")
+        os.remove(zip_file)
+        logger.info("Zip file removed successfully.")
+    except Exception as e:
+        logger.error(f"Error while deleting the zip file: {e}")
+        return False
+    
+    logger.info("download_zip_file function completed successfully.")
     return True
 
 
@@ -299,8 +320,122 @@ def download_mogrt_file(category, muziekmogrt_links, folder_path):
 ########################################################################################################################
 
 def run_themescript():
+    logger.debug('Starting run_themescript function.')
+
+    # Open a file dialog for the save directory
+    folder_path = filedialog.askdirectory()
+    logger.debug(f'Folder dialog opened, received path: {folder_path}')
+
+    # Check if the folder path is valid
+    if not folder_path:  # User pressed "Escape" or "Cancel"
+        logger.info("Folder selection was cancelled or closed. Exiting function.")
+        return
+
+    # Get user inputs
+    nameeditor = nameeditor_entry.get()
+    title = title_entry.get()
+    category = selected_category.get()
+    logger.debug(f'User inputs - nameeditor: "{nameeditor}", title: "{title}", category: "{category}"')
+
+    # Check for special characters in the input fields
+    if has_special_characters(nameeditor) or has_special_characters(title) or has_special_characters(category):
+        logger.warning("Special characters detected in input fields.")
+        messagebox.showerror("Fout", "Gebruik geen speciale tekens in de invoervelden.")
+        return
+
+    # Confirm inputs after validation
+    logger.debug(f'Validated inputs - name: {nameeditor}, title: {title}, category: {category}')
+
+    # Ensure required fields are filled before creating the folder
+    if title and category:
+        try:
+            download_link = download_links[category]
+            logger.debug(f'Download link for category "{category}": {download_link}')
+
+            # Create unique folder name
+            folder_name = f"{today}_{category}_{title}_{nameeditor}"
+            folder_name_proj = f"{today}_{category}_{title}"
+            folder_path = os.path.join(folder_path, folder_name)
+            os.makedirs(folder_path)
+            logger.info(f'Created folder at path: {folder_path}')
+
+            # Download and unzip files to the new directory
+            download_zip_file(download_link, folder_path)
+            logger.info(f'Files downloaded and unzipped to folder: {folder_path}')
+
+            # Rename .prproj files in the "1. PROJECT" subfolder
+            project_folder = os.path.join(folder_path, "1. PROJECT")
+            renamed = False
+            for root, dirs, files in os.walk(project_folder):
+                for file in files:
+                    if file.endswith(".prproj"):
+                        old_name = file
+                        new_name_pproj = f"{folder_name_proj}.prproj"
+                        os.rename(os.path.join(root, old_name), os.path.join(root, new_name_pproj))
+                        logger.debug(f'Renamed project file from "{old_name}" to "{new_name_pproj}"')
+                        renamed = True
+            if not renamed:
+                logger.warning('No .prproj files found in the "1. PROJECT" folder.')
+
+            # Path to the created project file
+            pprojfile_path = os.path.join(project_folder, new_name_pproj)
+            logger.info(f'Primary project file path: {pprojfile_path}')
+
+            # Process downgrade if requested
+            if downgrade_var.get():
+                logger.debug('Downgrade option selected.')
+                downgraded_path = os.path.join(project_folder, os.path.splitext(new_name_pproj)[0] + "_downgraded.prproj")
+
+                project_data = open_file(pprojfile_path)
+                if project_data:
+                    logger.debug('Successfully opened project file for downgrade.')
+                    converted_data = convert_data(project_data)
+                    if converted_data:
+                        write_output_file(
+                            converted_data,
+                            downgraded_path,
+                            lambda: messagebox.showinfo(
+                                "Downgrade Voltooid",
+                                f"Een downgraded project voor Premiere Pro CC 2019 (v36.0) of nieuwer is aangemaakt op de volgende locatie: {downgraded_path}"
+                            )
+                        )
+                        logger.info(f'Downgraded file saved at: {downgraded_path}')
+                    else:
+                        logger.error('Conversion of project data failed.')
+                        messagebox.showerror("Fout", "Conversie van projectgegevens is mislukt.")
+                else:
+                    logger.error('Failed to open original project file for downgrade.')
+                    messagebox.showerror("Fout", "Origineel projectbestand kon niet worden geopend.")
+            else:
+                logger.debug('Downgrade option not selected.')
+
+            # Notify user of successful creation
+            messagebox.showinfo("Map succesvol aangemaakt!", f"Locatie en mapnaam: {folder_path}")
+            logger.info('Folder creation and download process completed successfully.')
+
+        except Exception as e:
+            logger.exception("An error occurred during the folder creation or file processing.")
+            messagebox.showerror("Fout", f"Er is een onverwachte fout opgetreden: {str(e)}")
+    else:
+        logger.warning("Missing required fields: title or category not provided.")
+        messagebox.showerror("Fout", "Voer de naam van de editor/redacteur in, een titel voor de map en selecteer een thema.\n\nControleer of je deze gegevens hebt ingevuld.")
+
+    # Update output field with the path
+    output_field.config(state="normal")  # Enable editing
+    output_field.delete(1.0, tk.END)  # Clear existing content
+    output_field.insert(tk.END, folder_path)  # Insert new folder path
+    output_field.config(state="disabled")  # Disable editing again
+    logger.debug('Output field updated with the new folder path.')
+
+
+
+########################################################################################################################
+#Programmering voor voer een titel in + gedeelte thema wijzigen
+########################################################################################################################
+
+def run_projectcreator():
     # Log dat het bezig is
-    logger.debug('Running script')
+    logger.debug('Running script run_projectcreator')
     # Open een venster file dialog voor het selecteren van de save directory
     folder_path = filedialog.askdirectory()
 
@@ -320,7 +455,7 @@ def run_themescript():
     # Creeër een bestand als de naam, titel en categorie van de invulvelden/keuzeschermen zijn ingevuld.
     if title and category:
         # Verkrijg de download link van de dictionary gebaseerd op de geselecteerde categorie
-        download_link = download_links[category]
+        download_link = "https://www.dropbox.com/scl/fo/dle2qh4iscs71nbv7b48j/h?rlkey=gukarkdx3unbyijz2558z5koh&dl=1"
         
         # Log the download link
         logger.debug(f'Obtained download link: {download_link}')
@@ -336,21 +471,90 @@ def run_themescript():
         #download_wav_file(category, muziek_links, folder_path)
         #download_mogrt_file(category, muziek_links, folder_path)
 
+        # Log de folder path waar de bestanden zijn uitgepakt
+        logger.debug(f'Uitpakken bestanden naar: {folder_path}')
+
         for root, dirs, files in os.walk(f"{folder_path}/1. PROJECT"):
             for file in files:
                 if file.endswith(".prproj"):
                     old_name = file
-                    new_name = f"{folder_name_proj}.prproj"
-                    os.rename(os.path.join(root, old_name), os.path.join(root, new_name))
+                    new_name_pproj = f"{folder_name_proj}.prproj"
+                    os.rename(os.path.join(root, old_name), os.path.join(root, new_name_pproj))
 
-        # Log de folder path waar de bestanden zijn uitgepakt
-        logger.debug(f'Uitpakken bestanden naar: {folder_path}')
+        # Project is in subdirectory 1. PROJECT. We need to navigate to this folder in folder_path
+        project_subdirectory = "1. PROJECT"
+        pproj_path = os.path.join(folder_path, project_subdirectory)
+        pprojfile_path = os.path.join(pproj_path, new_name_pproj)
 
-        # laat een bericht zien om aan te geven dat het item succesvol is aangemaakt
-        messagebox.showinfo("Map succesvol aangemaakt!", "Locatie en mapnaam is te vinden op: " + folder_path)
-    else:
-        # Laat een error bericht zien wanneer de naam, titel en/of categorie van de invulvelden/keuzeschermen niet zijn ingevuld.
-        messagebox.showerror("Error", "Voer de naam van de editor/redacteur in, een titel voor de map en selecteer een thema. \n\nControleer of je deze gegevens hebt ingevuld.")
+        if not os.path.isfile(pprojfile_path):
+            raise ValueError("Example prproj path does not exists on disk '{}'".format(new_name_pproj))
+
+        # start premiere
+        print("Starting Premiere Pro...")
+        if pymiere_exe.is_premiere_running()[0]:
+            raise ValueError("There already is a running instance of premiere")
+        pymiere_exe.start_premiere()
+
+        # open a project
+        print("Opening project '{}'".format(new_name_pproj))
+        error = None
+        # here we have to try multiple times, as on slower systems there is a slight delay between Premiere initialization
+        # and when the PymiereLink panel is started and ready to receive commands. Most install will succeed on the first loop
+        for x in range(20):
+            try:
+                pymiere.objects.app.openDocument(pprojfile_path)
+            except Exception as error:
+                time.sleep(0.5)
+            else:
+                break
+        else:
+            raise error or ValueError("Couldn't open path '{}'".format(new_name_pproj))
+
+        # Load MOGRT file into sequence
+        sequences = pymiere.objects.app.project.sequences
+        sequence = [s for s in sequences if s.name == "LOVO_Leader"]  # search sequence by name
+        print("Opening sequence named '{}'".format(sequence))
+        if not sequence:
+            raise NameError("Something went wrong with {}").format(sequence)
+        sequence = sequence[0]
+        pymiere.objects.app.project.openSequence(sequence.sequenceID)
+        pymiere.objects.app.project.activeSequence = sequence
+        
+        mogrt_path = os.path.join(pproj_path, "Motion Graphics Template Media", "LOVO Bumperbalk 2023.mogrt")
+        print(mogrt_path)
+        mgt_clip = sequence.importMGT(  
+            path=mogrt_path,  
+            time=time_from_seconds(0),  # start time  
+            videoTrackIndex=2, audioTrackIndex=0  # on which track to place it  
+        )  
+        # get component hosting modifiable template properties  
+        mgt_component = mgt_clip.getMGTComponent()  
+        # handle two types, see Note 2 above
+        if mgt_component is None:
+            # Premiere Pro type, directly use components
+            components = mgt_clip.components
+        else:
+            # After Effects type, everything is hosted by the MGT component
+            components = [mgt_component]
+
+        # Use razor tool to cut the clip in 2
+        seq = pymiere.objects.app.project.activeSequence
+        time = time_from_seconds(5)
+        # format Time object to timecode string
+        timecode = time.getFormatted(seq.getSettings().videoFrameRate, seq.getSettings().videoDisplayFormat)
+        pymiere.objects.qe.project.getActiveSequence().getVideoTrackAt(2).razor(timecode)
+        # Selecte, delete the second clip in the timeline.
+        project = pymiere.objects.app.project
+        clips = wrappers.list_video(project.activeSequence)
+        #clips[1].setSelected(True, True) # Use this to select a clip. 0 is the first clip
+        clips[1].remove(True, True)
+
+
+#        # laat een bericht zien om aan te geven dat het item succesvol is aangemaakt
+#        messagebox.showinfo("Map succesvol aangemaakt!", "Locatie en mapnaam is te vinden op: " + folder_path)
+#    else:
+#        # Laat een error bericht zien wanneer de naam, titel en/of categorie van de invulvelden/keuzeschermen niet zijn ingevuld.
+#        messagebox.showerror("Error", "Voer de naam van de editor/redacteur in, een titel voor de map en selecteer een thema. \n\nControleer of je deze gegevens hebt ingevuld.")
     output_field.delete(1.0, tk.END)
     output_field.insert(tk.END, folder_path)
 
@@ -363,32 +567,35 @@ def run_themescript():
 progress_bar = None
 
 def open_window_hulpmiddelen():
-
     # Create a new window
     convert_window = tk.Toplevel()
     convert_window.title("Bestanden converteren")
-    convert_window.geometry("380x260") # Eerste getal is breedte, tweede getal is hoogte
-    convert_font = tk.font.Font(family='Arial', size=12)
-    convert_window.option_add('*font', convert_font)
+    convert_window.geometry("380x260")  # Width x Height in pixels
 
-    # Maak een label om uit te leggen: vormgeving downloaden
-    vormgeving = tk.Label(convert_window, text="Bij de hulpmiddelen zitten:\n fonts, mogrts, export presets")
+    # Define the font correctly using tk.font.Font
+    font = tk.font.Font(family='Arial', size=12)  # Font settings
+    root.option_add('*font', font)
+
+    # Explanation label for 'vormgeving downloaden' with ttk.Label
+    vormgeving = ttk.Label(convert_window, text="Bij de hulpmiddelen zitten:\n fonts, mogrts, export presets")
     vormgeving.pack(padx=5, pady=5)
 
-    # Maak een knop om de vormgeving te downloaden
-    vormgeving_button = tk.Button(convert_window, text="Download hulpmiddelen", command=lambda: download_overigeitems("Vormgeving", download_links["Vormgeving"]))
+    # Button to download 'vormgeving' items using ttk.Button
+    vormgeving_button = ttk.Button(convert_window, text="Download hulpmiddelen",
+                                   command=lambda: download_overigeitems("Vormgeving", download_links["Vormgeving"]))
     vormgeving_button.pack(pady=5)
 
-    # Maak een label om uit te leggen: vormgeving downloaden
-    convert = tk.Label(convert_window, text="Het volgende is nog in beta!\nHieronder kun je video's converteren\n naar LOVO format")
-    convert.pack(padx=5, pady=5)
+    # Explanation label for video conversion with ttk.Label
+    convert_label = ttk.Label(convert_window, text="Het volgende is nog in beta!\nHieronder kun je video's converteren\n naar LOVO format")
+    convert_label.pack(padx=5, pady=5)
 
-    # Create a button for converting to the LOVO TV preset
-    convert_button = tk.Button(convert_window, text="Converteer video naar LOVO TV Preset", command=run_convert_script)
-    convert_button.pack(pady=5)
-    # Create a button for converting to the LOVO TV preset + intro
-    convert_button = tk.Button(convert_window, text="Converteer video naar thema + LOVO TV Preset", command=run_convert_script)
-    convert_button.pack(pady=5)
+    # Button for converting to LOVO TV preset with ttk.Button
+    convert_button_1 = ttk.Button(convert_window, text="Converteer video naar LOVO TV Preset", command=run_convert_script)
+    convert_button_1.pack(pady=5)
+
+    # Button for converting to LOVO TV preset + intro with ttk.Button
+    convert_button_2 = ttk.Button(convert_window, text="Converteer video naar thema + LOVO TV Preset", command=run_convert_script)
+    convert_button_2.pack(pady=5)
 
 def run_convert_script():
 
@@ -477,6 +684,11 @@ def download_overigeitems(item_name, download_link):
     # Open a file dialog to select the storage location
     folder_path = filedialog.askdirectory()
 
+    # Check if the folder path is valid
+    if not folder_path:  # User pressed "Escape" or "Cancel"
+        logger.info("Folder selection was cancelled or closed. Exiting function.")
+        return
+
     # Create the folder with the current date and the specified title
     folder_name = f"{today}_{item_name}_{current_time}"
     folder_path = os.path.join(folder_path, folder_name)
@@ -491,6 +703,38 @@ def download_overigeitems(item_name, download_link):
     output_field.insert(tk.END, folder_path)
 
 
+
+########################################################################################################################
+#Programmering knop converteren project naar oudere versie.
+########################################################################################################################
+
+# A part of the code is used inside run_themescript
+def open_file(path):
+    global filename
+    tmp = tempfile.mkdtemp()
+    filename = os.path.splitext(os.path.basename(path))[0]
+    temp_file = tmp + '/' + filename
+
+    if path:  # If a file is chosen
+        with gzip.open(path, 'rb') as f_in:
+            with open(temp_file, 'wb') as f_out:
+                shutil.copyfileobj(f_in, f_out)
+        return etree.parse(temp_file)
+    else:
+        return None
+
+def convert_data(projectFile):
+    global filename
+    versionToConvert = "36"  # CC 2019 (v13.0)
+    for project in projectFile.xpath("/PremiereData/Project"):
+        if project.get('Version'):
+            project.set('Version', versionToConvert)
+            return etree.tostring(projectFile, encoding="utf-8", pretty_print=True)
+
+def write_output_file(data, output_file, callback):
+    with gzip.open(output_file, 'wb') as f:
+        f.write(data)
+    callback()
 
 ########################################################################################################################
 #Programmering knop ? rechtsonderin
@@ -526,60 +770,89 @@ def open_folder():
 #Programmering GUI
 ########################################################################################################################
 
+# Initialize the main window
 root = tk.Tk()
 root.title("LOVO Map Maker")
-root.geometry("400x505") # Eerste getal is breedte, tweede getal is hoogte
-font = tk.font.Font(family='Arial', size=12) # Semibold werkt niet, bold niet gebruiken
+root.geometry("400x585")  # Width x Height
+font = tk.font.Font(family='Arial', size=12)  # Font settings
 root.option_add('*font', font)
 
-icoon_tskmana = tk.PhotoImage(file="Assets/images/LOGO_LOVO_Zw.png") # maak een fotoimage-object van het icoonbestand
-root.wm_iconphoto(True, icoon_tskmana) # stel het icoon van het hoofdvenster in
+# Path to the Azure theme
+cwd = os.getcwd()
+theme_path = os.path.join(cwd, "Assets", "Theme", "azure.tcl")
 
-namelabel = tk.Label(root, text="Voornaam editor:")
+try:
+    root.tk.call("source", theme_path)
+    root.tk.call("set_theme", "dark")
+except tk.TclError as e:
+    print(f"Error loading Azure theme: {e}")
+    print("Falling back to default Tkinter theme.")
+
+# Set window icon
+icoon_tskmana = tk.PhotoImage(file="Assets/images/LOGO_LOVO_Zw.png")
+root.wm_iconphoto(True, icoon_tskmana)
+
+# Labels and entries
+namelabel = ttk.Label(root, text="Voornaam editor:")
 namelabel.pack(padx=5, pady=5)
 
-nameeditor_entry = tk.Entry(root)
+nameeditor_entry = ttk.Entry(root)
 nameeditor_entry.pack(padx=5, pady=5)
 
-titlelabel = tk.Label(root, text="Titel van item:")
+titlelabel = ttk.Label(root, text="Titel van item:")
 titlelabel.pack()
 
-title_entry = tk.Entry(root)
+title_entry = ttk.Entry(root)
 title_entry.pack(padx=5, pady=(5, 10))
 
+# Category combobox
 selected_category = tk.StringVar(root)
-selected_category.set("Selecteer thema") # instellen als standaardwaarde
+selected_category.set("Selecteer thema")  # Default value
 
 categories = ["Amusement", "Archief", "Cultuur", "Natuur", "Nieuws", "Politiek", "Sport", "AanTafelMetClaudy", "EnergiekOisterwijk", "Special"]
 category_menu = ttk.Combobox(root, textvariable=selected_category, values=categories)
 category_menu.pack(pady=5)
 
-button = tk.Button(root, text="Maak map aan", command=run_themescript)
-button.pack(pady=5)
+# Buttons with ttk to apply the Azure theme
+#create_project_button = ttk.Button(root, text="Creeër project", command=run_projectcreator)
+#create_project_button.pack(pady=5)
 
-# Maak een text veld aan dat o.a. het net aangemaakte folder_path kan laten zien.
-output_field = tk.Text(root, width=30, height=5)
-output_field.insert(tk.END, "Hier komt de locatie van uw \ngedownloade bestand te staan \nwanneer u dit heeft aangemaakt.")
-output_field.pack(padx=10, pady=10)
+create_folder_button = ttk.Button(root, text="Maak map aan", command=run_themescript)
+create_folder_button.pack(pady=5)
 
-# Knop om de map locatie over te nemen
-copy_button = tk.Button(root, text="Open map locatie", command=open_folder)
+# Checkbox for creating a downgraded version
+downgrade_var = tk.BooleanVar()  # Variable to hold checkbox state
+downgrade_checkbox = ttk.Checkbutton(root, text="Creeër downgraded Premiere Pro project", variable=downgrade_var)
+downgrade_checkbox.pack(pady=5)
+
+# Create a frame to hold the styled Text widget
+output_frame = ttk.Frame(root)
+output_frame.pack(padx=10, pady=10, fill='x', expand=True)
+
+# Set up the Text widget with read-only mode and styling
+output_field = tk.Text(output_frame, width=30, height=5, bg="#737373", fg="#FFFFFF", 
+                       wrap='word', relief="flat", font=font, highlightthickness=0,
+                       insertbackground="#007acc")  # Replace #007acc with the button color if different
+output_field.insert("1.0", "Hier komt de locatie van uw \ngedownloade bestand te staan \nwanneer u dit heeft aangemaakt.")
+output_field.config(state="disabled")  # Make the Text widget read-only
+output_field.pack(fill='both', expand=True, padx=5, pady=5)
+
+
+# Additional buttons with ttk
+copy_button = ttk.Button(root, text="Open map locatie", command=open_folder)
 copy_button.pack(padx=10, pady=10)
 
-# Knop ?
-button = tk.Button(root, text="?", width=3, height=1, command=run_vraagteken)
-button.pack(side="bottom", anchor="se", padx= 5, pady=5)
+question_button = ttk.Button(root, text="?", width=3, command=run_vraagteken)
+question_button.pack(side="bottom", anchor="se", padx=5, pady=5)
 
-# Tot nadere informatie is de knop handleiding uit en niet zichtbaar. Bij het verwijderen van de # zal de knop weer zichtbaar zijn.
-#handleiding_button = tk.Button(root, text="Handleiding", command=download_handleiding)
-#handleiding_button.pack(side="bottom", anchor="se", padx= 5, pady=5)
+# Uncomment if you want to add the Handleiding button
+# handleiding_button = ttk.Button(root, text="Handleiding", command=download_handleiding)
+# handleiding_button.pack(side="bottom", anchor="se", padx=5, pady=5)
 
-# Knop huisstijlhandboek
-huisstijlhandboek_button = tk.Button(root, text="Download huisstijlhandboek", command=lambda: download_overigeitems("Huisstijlhandboek", download_links["Huisstijlhandboek"]))
-huisstijlhandboek_button.pack(side="bottom", anchor="se", padx= 5, pady=5)
+huisstijlhandboek_button = ttk.Button(root, text="Download huisstijlhandboek", command=lambda: download_overigeitems("Huisstijlhandboek", download_links["Huisstijlhandboek"]))
+huisstijlhandboek_button.pack(side="bottom", anchor="se", padx=5, pady=5)
 
-# Knop hulpmiddelen
-convert_button = tk.Button(root, text="Hulpmiddelen", command=open_window_hulpmiddelen)
-convert_button.pack(side="bottom", anchor="se", padx= 5, pady=5)
+convert_button = ttk.Button(root, text="Hulpmiddelen", command=open_window_hulpmiddelen)
+convert_button.pack(side="bottom", anchor="se", padx=5, pady=5)
 
 root.mainloop()
